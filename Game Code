@@ -1,0 +1,716 @@
+#include "raylib.h"
+#include <stdlib.h>
+#include <time.h>
+#include <string>
+#include <vector>
+#include <iostream>
+#include <fstream>
+
+#define SCREEN_WIDTH 800
+#define SCREEN_HEIGHT 600
+#define CELL_SIZE 40
+#define GRID_WIDTH (SCREEN_WIDTH / CELL_SIZE)
+#define GRID_HEIGHT (SCREEN_HEIGHT / CELL_SIZE)
+
+
+// Structs
+typedef struct {
+    int x, y;
+} Position;
+
+typedef struct {
+    bool visited;
+    bool topWall, bottomWall, leftWall, rightWall;
+} Cell;
+
+typedef struct {
+    Position pos;
+    int puzzleID;
+    bool solved;
+} PuzzleDoor;
+
+typedef struct {
+    Position pos;
+} Enemy;
+
+typedef struct {
+    Position pos;
+} Resource;
+
+struct Item {
+    std::string name;
+    int quantity;
+};
+
+// Global variables
+Cell maze[GRID_WIDTH][GRID_HEIGHT];
+Position player;      // Player position
+Position goal;        // Goal position
+Enemy enemy;          // Enemy position
+Resource resources[5]; // Resources 
+PuzzleDoor puzzles[4]; // Puzzle doors
+std::vector<Item> inventory; // Inventory to track resources
+bool gameWon = false;
+bool gameOver = false;
+bool inPuzzle = false;
+bool inMenu = true;
+bool inInstructions = false;
+int currentPuzzleID = -1;
+std::string playerInput = ""; // Input during puzzles
+bool incorrectAnswer = false;
+bool savedGameExists = false; // Tracks if there is a saved game
+
+// Timer variables
+float countdownTimer = 60.0f; // Reduced to 1 minute (60 seconds)
+bool timeOut = false;          // Track if the time has run out
+
+
+// Function declarations
+void InitializeMaze();
+void GenerateMaze(int x, int y);
+void InitializePuzzles();
+void InitializeResources();
+void SpawnEnemy();
+bool SolvePuzzle(int puzzleID);
+void CheckPlayerPuzzleInteraction();
+void CheckPlayerResourceCollection();
+void UpdateEnemy();
+void UpdateTimer();
+void CheckGameState();
+void AddToInventory(const std::string& itemName);
+bool UseItem(const std::string& itemName);
+void DrawMaze();
+void DrawPlayer();
+void DrawGoal();
+void DrawEnemy();
+void DrawPuzzles();
+void DrawResources();
+void DrawTimer();
+void DrawInventory();
+void MovePlayer(int dx, int dy);
+void ShowMenu();
+void ShowInstructions();
+void SaveGame();
+bool LoadGame();
+void ShowGameSavedMessage();
+
+void InitializeMaze() {
+    for (int x = 0; x < GRID_WIDTH; x++) {
+        for (int y = 0; y < GRID_HEIGHT; y++) {
+            maze[x][y].visited = false;
+            maze[x][y].topWall = true;
+            maze[x][y].bottomWall = true;
+            maze[x][y].leftWall = true;
+            maze[x][y].rightWall = true;
+        }
+    }
+}
+
+void GenerateMaze(int x, int y) {
+    maze[x][y].visited = true;
+
+    int directions[] = { 0, 1, 2, 3 }; // Up, Right, Down, Left
+    for (int i = 0; i < 4; i++) {
+        int j = GetRandomValue(i, 3);
+        int temp = directions[i];
+        directions[i] = directions[j];
+        directions[j] = temp;
+    }
+
+    for (int i = 0; i < 4; i++) {
+        int nx = x, ny = y;
+
+        if (directions[i] == 0) ny -= 1;          // Up
+        else if (directions[i] == 1) nx += 1;     // Right
+        else if (directions[i] == 2) ny += 1;     // Down
+        else if (directions[i] == 3) nx -= 1;     // Left
+
+        if (nx >= 0 && nx < GRID_WIDTH && ny >= 0 && ny < GRID_HEIGHT && !maze[nx][ny].visited) {
+            if (directions[i] == 0) {
+                maze[x][y].topWall = false;
+                maze[nx][ny].bottomWall = false;
+            }
+            else if (directions[i] == 1) {
+                maze[x][y].rightWall = false;
+                maze[nx][ny].leftWall = false;
+            }
+            else if (directions[i] == 2) {
+                maze[x][y].bottomWall = false;
+                maze[nx][ny].topWall = false;
+            }
+            else if (directions[i] == 3) {
+                maze[x][y].leftWall = false;
+                maze[nx][ny].rightWall = false;
+            }
+            GenerateMaze(nx, ny);
+        }
+    }
+}
+
+void InitializePuzzles() {
+    for (int i = 0; i < 4; i++) {
+        while (true) {
+            int x = GetRandomValue(1, GRID_WIDTH - 2);
+            int y = GetRandomValue(1, GRID_HEIGHT - 2);
+
+            bool overlap = false;
+            for (int j = 0; j < i; j++) {
+                if (puzzles[j].pos.x == x && puzzles[j].pos.y == y) {
+                    overlap = true;
+                    break;
+                }
+            }
+
+            if (!overlap && (x != player.x || y != player.y) && (x != goal.x || y != goal.y)) {
+                puzzles[i].pos.x = x;
+                puzzles[i].pos.y = y;
+                puzzles[i].puzzleID = i + 1;
+                puzzles[i].solved = false;
+                break;
+            }
+        }
+    }
+}
+
+void InitializeResources() {
+    for (int i = 0; i < 5; i++) {
+        while (true) {
+            int x = GetRandomValue(1, GRID_WIDTH - 2);
+            int y = GetRandomValue(1, GRID_HEIGHT - 2);
+
+            bool overlap = false;
+            for (int j = 0; j < i; j++) {
+                if (resources[j].pos.x == x && resources[j].pos.y == y) {
+                    overlap = true;
+                    break;
+                }
+            }
+
+            if (!overlap && (x != player.x || y != player.y) && (x != goal.x || y != goal.y)) {
+                resources[i].pos.x = x;
+                resources[i].pos.y = y;
+                break;
+            }
+        }
+    }
+}
+
+void SpawnEnemy() {
+    while (true) {
+        int x = GetRandomValue(1, GRID_WIDTH - 2);
+        int y = GetRandomValue(1, GRID_HEIGHT - 2);
+
+        if ((x != player.x || y != player.y) && (x != goal.x || y != goal.y)) {
+            enemy.pos.x = x;
+            enemy.pos.y = y;
+            break;
+        }
+    }
+}
+
+void ShowSaveConfirmation() {
+    BeginDrawing();
+    ClearBackground(WHITE);
+    DrawText("Game Saved Successfully!", SCREEN_WIDTH / 2 - 150, SCREEN_HEIGHT / 2 - 20, 20, BLUE);
+    EndDrawing();
+
+    float startTime = GetTime();
+    while (GetTime() - startTime < 2.0f) {
+    }
+}
+
+void SaveGame() {
+    std::ofstream saveFile("savegame.dat", std::ios::binary);
+    if (!saveFile) {
+        std::cerr << "Error: Could not open save file.\n";
+        return;
+    }
+
+    // Save game state
+    saveFile.write((char*)&player, sizeof(player));
+    saveFile.write((char*)&goal, sizeof(goal));
+    saveFile.write((char*)&enemy, sizeof(enemy));
+    saveFile.write((char*)&countdownTimer, sizeof(countdownTimer));
+
+    // Save inventory
+    for (const auto& item : inventory) {
+        size_t nameSize = item.name.size();
+        saveFile.write((char*)&nameSize, sizeof(nameSize));
+        saveFile.write(item.name.c_str(), nameSize);
+        saveFile.write((char*)&item.quantity, sizeof(item.quantity));
+    }
+    size_t endInventory = 0;
+    saveFile.write((char*)&endInventory, sizeof(endInventory));
+
+    saveFile.close();
+    savedGameExists = true;
+
+    // Confirmation message
+    const int messageDuration = 1;
+    float timer = 0;
+
+    while (timer < messageDuration) {
+        BeginDrawing();
+        ClearBackground(WHITE);
+        DrawText("Game Saved Successfully!", SCREEN_WIDTH / 2 - 150, SCREEN_HEIGHT / 2, 20, BLUE);
+        EndDrawing();
+        timer += GetFrameTime();
+    }
+
+    // Exit the game after saving
+    CloseWindow();
+    exit(0);
+}
+
+
+bool LoadGame() {
+    std::ifstream loadFile("savegame.dat", std::ios::binary);
+    if (!loadFile) {
+        std::cerr << "Error: Could not open load file.\n";
+        return false;
+    }
+
+    // Load game state
+    loadFile.read((char*)&player, sizeof(player));
+    loadFile.read((char*)&goal, sizeof(goal));
+    loadFile.read((char*)&enemy, sizeof(enemy));
+    loadFile.read((char*)&countdownTimer, sizeof(countdownTimer));
+
+    // Load inventory
+    inventory.clear();
+    while (true) {
+        size_t nameSize;
+        loadFile.read((char*)&nameSize, sizeof(nameSize));
+        if (nameSize == 0) break;
+
+        std::string name(nameSize, ' ');
+        loadFile.read(&name[0], nameSize);
+
+        int quantity;
+        loadFile.read((char*)&quantity, sizeof(quantity));
+        inventory.push_back({ name, quantity });
+    }
+
+    loadFile.close();
+
+    const int messageDuration = 1;
+    float timer = 0;
+
+    while (timer < messageDuration) {
+        BeginDrawing();
+        ClearBackground(DARKGRAY);
+        DrawText("Game Loaded Successfully!", SCREEN_WIDTH / 2 - 150, SCREEN_HEIGHT / 2, 20, GREEN);
+        EndDrawing();
+        timer += GetFrameTime();
+    }
+
+    return true;
+}
+
+bool SaveExists() {
+    std::ifstream saveFile("savegame.dat");
+    return saveFile.good();
+}
+
+void ShowGameSavedMessage() {
+    const int messageDuration = 2;
+    float timer = 0;
+
+    while (timer < messageDuration) {
+        BeginDrawing();
+        ClearBackground(WHITE);
+        DrawText("Game Saved Successfully!", SCREEN_WIDTH / 2 - 150, SCREEN_HEIGHT / 2, 20, BLUE);
+        EndDrawing();
+
+        timer += GetFrameTime();
+    }
+}
+
+void CheckSaveFile() {
+    std::ifstream file("savegame.dat");
+    savedGameExists = file.good();
+}
+
+void ShowMenu() {
+    BeginDrawing();
+    ClearBackground(DARKGRAY);
+
+    DrawText("Welcome to Mystery Maze!", SCREEN_WIDTH / 2 - 180, SCREEN_HEIGHT / 2 - 100, 30, WHITE);
+    DrawText("Choose your action and enter the number:", SCREEN_WIDTH / 2 - 200, SCREEN_HEIGHT / 2 - 50, 20, WHITE);
+    DrawText("1. Start Game", SCREEN_WIDTH / 2 - 80, SCREEN_HEIGHT / 2, 20, WHITE);
+    DrawText("2. View Instructions", SCREEN_WIDTH / 2 - 100, SCREEN_HEIGHT / 2 + 30, 20, WHITE);
+
+    if (savedGameExists) {
+        DrawText("3. Load Previous Game", SCREEN_WIDTH / 2 - 130, SCREEN_HEIGHT / 2 + 60, 20, WHITE);
+        DrawText("4. Quit", SCREEN_WIDTH / 2 - 40, SCREEN_HEIGHT / 2 + 90, 20, WHITE);
+    }
+    else {
+        DrawText("3. Quit", SCREEN_WIDTH / 2 - 40, SCREEN_HEIGHT / 2 + 60, 20, WHITE);
+    }
+
+    EndDrawing();
+
+    if (IsKeyPressed(KEY_ONE)) {
+        inMenu = false;
+        gameWon = false;
+        gameOver = false;
+        countdownTimer = 60.0f; 
+    }
+    else if (IsKeyPressed(KEY_TWO)) {
+        inMenu = false;
+        inInstructions = true;
+    }
+    else if (savedGameExists && IsKeyPressed(KEY_THREE)) {
+        if (LoadGame()) {
+            inMenu = false; 
+        }
+        else {
+            std::cerr << "Error: Failed to load game.\n";
+        }
+    }
+    else if ((!savedGameExists && IsKeyPressed(KEY_THREE)) ||
+        (savedGameExists && IsKeyPressed(KEY_FOUR))) {
+        CloseWindow(); 
+        exit(0);
+    }
+    else if (IsKeyPressed(KEY_R)) {
+        inMenu = true;
+        inInstructions = false; 
+    }
+}
+
+void ShowInstructions() {
+    BeginDrawing();
+    ClearBackground(DARKGRAY);
+
+    DrawText("Instructions:", SCREEN_WIDTH / 2 - 100, SCREEN_HEIGHT / 2 - 150, 30, WHITE);
+    DrawText("1. Use arrow keys to navigate through the maze.", SCREEN_WIDTH / 2 - 250, SCREEN_HEIGHT / 2 - 100, 20, WHITE);
+    DrawText("2. Collect resources and solve puzzles to progress.", SCREEN_WIDTH / 2 - 250, SCREEN_HEIGHT / 2 - 70, 20, WHITE);
+    DrawText("3. Avoid the enemy or you'll lose the game.", SCREEN_WIDTH / 2 - 250, SCREEN_HEIGHT / 2 - 40, 20, WHITE);
+    DrawText("4. Complete the maze before the timer runs out.", SCREEN_WIDTH / 2 - 250, SCREEN_HEIGHT / 2 - 10, 20, WHITE);
+
+    DrawText("Press R to return to the main menu.", SCREEN_WIDTH / 2 - 180, SCREEN_HEIGHT / 2 + 60, 20, WHITE);
+
+    EndDrawing();
+
+   
+    if (IsKeyPressed(KEY_R)) {
+        inInstructions = false; 
+        inMenu = true;         
+    }
+}
+
+void ProcessMenuSelection(int choice) {
+    if (choice == 1) {
+        inMenu = false;
+        gameOver = false;
+        InitializeMaze();
+        GenerateMaze(0, 0);
+        InitializePuzzles();
+        InitializeResources();
+        SpawnEnemy();
+    }
+    else if (choice == 2) {
+        inInstructions = true;
+    }
+    else if (choice == 3 && SaveExists()) {
+        LoadGame();
+        inMenu = false;
+    }
+    else if (choice == 3 || (choice == 4 && SaveExists())) {
+        exit(0); 
+    }
+}
+
+
+bool SolvePuzzle(int puzzleID) {
+    if (puzzleID == 1) return (playerInput == "13");
+    if (puzzleID == 2) return (playerInput == "-5");
+    if (puzzleID == 3) return (playerInput == "a");
+    if (puzzleID == 4) return (playerInput == "a");
+    return false;
+}
+
+void CheckPlayerPuzzleInteraction() {
+    for (int i = 0; i < 4; i++) {
+        if (player.x == puzzles[i].pos.x && player.y == puzzles[i].pos.y && !puzzles[i].solved) {
+            inPuzzle = true;
+            currentPuzzleID = puzzles[i].puzzleID;
+            playerInput = "";
+            incorrectAnswer = false;
+            break;
+        }
+    }
+}
+
+void CheckPlayerResourceCollection() {
+    for (int i = 0; i < 5; i++) {
+        if (player.x == resources[i].pos.x && player.y == resources[i].pos.y) {
+            AddToInventory("Diamond");
+            resources[i].pos = { -1, -1 }; // Remove resource from the maze
+            break;
+        }
+    }
+}
+
+void UpdateEnemy() {
+    int nx = enemy.pos.x;
+    int ny = enemy.pos.y;
+
+    int dir = GetRandomValue(0, 3);
+    if (dir == 0 && !maze[nx][ny].topWall) ny--;
+    else if (dir == 1 && !maze[nx][ny].rightWall) nx++;
+    else if (dir == 2 && !maze[nx][ny].bottomWall) ny++;
+    else if (dir == 3 && !maze[nx][ny].leftWall) nx--;
+
+    if (nx >= 0 && nx < GRID_WIDTH && ny >= 0 && ny < GRID_HEIGHT) {
+        enemy.pos.x = nx;
+        enemy.pos.y = ny;
+    }
+
+    if (enemy.pos.x == player.x && enemy.pos.y == player.y) {
+        if (UseItem("Diamond")) {
+            SpawnEnemy(); // Escape using a diamond
+        }
+        else {
+            gameOver = true;
+        }
+    }
+}
+
+void UpdateTimer() {
+    if (!gameOver && !gameWon) {
+        countdownTimer -= GetFrameTime();
+
+        if (countdownTimer <= 0) {
+            countdownTimer = 0;
+            gameOver = true;  // Time runs out, game over
+            timeOut = true;
+        }
+    }
+}
+
+void CheckGameState() {
+    if (player.x == goal.x && player.y == goal.y) {
+        gameWon = true;
+    }
+}
+
+void AddToInventory(const std::string& itemName) {
+    for (auto& item : inventory) {
+        if (item.name == itemName) {
+            if (item.quantity < 5) { // Max of 5 items
+                item.quantity++;
+            }
+            return;
+        }
+    }
+    inventory.push_back({ itemName, 1 });
+}
+
+bool UseItem(const std::string& itemName) {
+    for (auto& item : inventory) {
+        if (item.name == itemName && item.quantity > 0) {
+            item.quantity--;
+            return true;
+        }
+    }
+    return false;
+}
+
+void DrawMaze() {
+    for (int x = 0; x < GRID_WIDTH; x++) {
+        for (int y = 0; y < GRID_HEIGHT; y++) {
+            int posX = x * CELL_SIZE;
+            int posY = y * CELL_SIZE;
+            if (maze[x][y].topWall) DrawLine(posX, posY, posX + CELL_SIZE, posY, WHITE);
+            if (maze[x][y].rightWall) DrawLine(posX + CELL_SIZE, posY, posX + CELL_SIZE, posY + CELL_SIZE, WHITE);
+            if (maze[x][y].bottomWall) DrawLine(posX, posY + CELL_SIZE, posX + CELL_SIZE, posY + CELL_SIZE, WHITE);
+            if (maze[x][y].leftWall) DrawLine(posX, posY, posX, posY + CELL_SIZE, WHITE);
+        }
+    }
+}
+
+void DrawPlayer() {
+    DrawRectangle(player.x * CELL_SIZE + 2, player.y * CELL_SIZE + 2, CELL_SIZE - 4, CELL_SIZE - 4, PURPLE);
+}
+
+void DrawGoal() {
+    DrawRectangle(goal.x * CELL_SIZE + 2, goal.y * CELL_SIZE + 2, CELL_SIZE - 4, CELL_SIZE - 4, GREEN);
+}
+
+void DrawEnemy() {
+    DrawCircle(enemy.pos.x * CELL_SIZE + CELL_SIZE / 2, enemy.pos.y * CELL_SIZE + CELL_SIZE / 2, CELL_SIZE / 3, RED);
+}
+
+void DrawPuzzles() {
+    for (int i = 0; i < 4; i++) {
+        if (!puzzles[i].solved) {
+            DrawRectangle(puzzles[i].pos.x * CELL_SIZE + 2, puzzles[i].pos.y * CELL_SIZE + 2,
+                CELL_SIZE - 4, CELL_SIZE - 4, YELLOW);
+        }
+    }
+}
+
+void DrawResources() {
+    for (int i = 0; i < 5; i++) {
+        if (resources[i].pos.x >= 0 && resources[i].pos.y >= 0) {
+            int centerX = resources[i].pos.x * CELL_SIZE + CELL_SIZE / 2;
+            int centerY = resources[i].pos.y * CELL_SIZE + CELL_SIZE / 2;
+
+            Vector2 topPoint = { centerX, centerY - CELL_SIZE / 3 };
+            Vector2 leftPoint = { centerX - CELL_SIZE / 3, centerY + CELL_SIZE / 3 };
+            Vector2 rightPoint = { centerX + CELL_SIZE / 3, centerY + CELL_SIZE / 3 };
+
+            DrawTriangle(topPoint, leftPoint, rightPoint, BLUE);
+        }
+    }
+}
+
+void DrawInventory() {
+    std::string inventoryText = "Diamonds: 0";
+    for (const auto& item : inventory) {
+        if (item.name == "Diamond") {
+            inventoryText = "Diamonds: " + std::to_string(item.quantity);
+            break;
+        }
+    }
+    DrawText(inventoryText.c_str(), 10, 10, 20, WHITE);
+}
+
+void DrawTimer() {
+    int minutes = (int)(countdownTimer / 60);
+    int seconds = (int)(countdownTimer) % 60;
+
+    char timerText[20];
+    snprintf(timerText, sizeof(timerText), "Time: %02d:%02d", minutes, seconds);
+
+    DrawText(timerText, SCREEN_WIDTH - 150, 10, 20, WHITE);
+}
+
+
+void MovePlayer(int dx, int dy) {
+    if (inPuzzle || gameOver) return;
+
+    int newX = player.x + dx;
+    int newY = player.y + dy;
+
+    if (newX < 0 || newX >= GRID_WIDTH || newY < 0 || newY >= GRID_HEIGHT) return;
+    if (dx == -1 && maze[player.x][player.y].leftWall) return;
+    if (dx == 1 && maze[player.x][player.y].rightWall) return;
+    if (dy == -1 && maze[player.x][player.y].topWall) return;
+    if (dy == 1 && maze[player.x][player.y].bottomWall) return;
+
+    player.x = newX;
+    player.y = newY;
+}
+
+int main() {
+    InitWindow(SCREEN_WIDTH, SCREEN_HEIGHT, "Mystery Maze");
+    SetTargetFPS(60);
+
+    InitializeMaze();
+    GenerateMaze(0, 0);
+    player = { 0, 0 };
+    goal = { GRID_WIDTH - 1, GRID_HEIGHT - 1 };
+    InitializePuzzles();
+    InitializeResources();
+    SpawnEnemy();
+    CheckSaveFile();
+
+
+    while (!WindowShouldClose()) {
+        if (inMenu) {
+            ShowMenu();
+        }
+        else if (inInstructions) {
+            ShowInstructions();
+        }
+
+        else {
+            if (gameOver) {
+                BeginDrawing();
+                ClearBackground(BLACK);
+                DrawText("Game Over!", SCREEN_WIDTH / 2 - 100, SCREEN_HEIGHT / 2, 40, RED);
+                EndDrawing();
+                continue;
+            }
+
+            if (gameWon) {
+                BeginDrawing();
+                ClearBackground(WHITE);
+                DrawText("You Win!", SCREEN_WIDTH / 2 - 100, SCREEN_HEIGHT / 2, 40, GREEN);
+                EndDrawing();
+                continue;
+            }
+
+            UpdateTimer();
+
+            if (inPuzzle) {
+                BeginDrawing();
+                ClearBackground(WHITE);
+                DrawText("Solve the puzzle to proceed!", 100, 100, 20, BLACK);
+
+                if (currentPuzzleID == 1) DrawText("5 + 8 = ?", 100, 150, 20, DARKGRAY);
+                else if (currentPuzzleID == 2) DrawText("4 - 9 = ?", 100, 150, 20, DARKGRAY);
+                else if (currentPuzzleID == 3) DrawText("Write the forgotten letter of 'read_ble':", 100, 150, 20, DARKGRAY);
+                else if (currentPuzzleID == 4) DrawText("Write the forgotten letter of 'sep_rate':", 100, 150, 20, DARKGRAY);
+
+                DrawText(playerInput.c_str(), 100, 200, 20, ORANGE);
+
+                if (incorrectAnswer) {
+                    DrawText("Incorrect! Try again.", 100, 250, 20, RED);
+                }
+
+                int key = GetCharPressed();
+                if (key >= 32 && key <= 125) {
+                    playerInput += (char)key;
+                }
+                if (IsKeyPressed(KEY_BACKSPACE) && !playerInput.empty()) {
+                    playerInput.pop_back();
+                }
+                if (IsKeyPressed(KEY_ENTER)) {
+                    if (SolvePuzzle(currentPuzzleID)) {
+                        puzzles[currentPuzzleID - 1].solved = true;
+                        inPuzzle = false;
+                        incorrectAnswer = false;
+                    }
+                    else {
+                        incorrectAnswer = true;
+                    }
+                }
+
+                EndDrawing();
+                continue;
+            }
+
+            if (IsKeyDown(KEY_D)) MovePlayer(1, 0);
+            if (IsKeyDown(KEY_A)) MovePlayer(-1, 0);
+            if (IsKeyDown(KEY_W)) MovePlayer(0, -1);
+            if (IsKeyDown(KEY_S)) MovePlayer(0, 1);
+
+            UpdateEnemy();
+            CheckPlayerPuzzleInteraction();
+            CheckPlayerResourceCollection();
+            CheckGameState();
+
+            BeginDrawing();
+            ClearBackground(BLACK);
+            DrawMaze();
+            DrawPlayer();
+            DrawGoal();
+            DrawEnemy();
+            DrawPuzzles();
+            DrawResources();
+            DrawInventory();
+            DrawTimer();
+            EndDrawing();
+
+            if (IsKeyPressed(KEY_FIVE)) SaveGame();
+            if (IsKeyPressed(KEY_FOUR)) LoadGame();
+        }
+    }
+
+    CloseWindow();
+    return 0;
+}
